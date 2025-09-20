@@ -1,29 +1,20 @@
-# ---- Build stage ----
+# Stage 1: Build
 FROM python:3.11-slim AS builder
-WORKDIR /app
 
-# Install build deps
+# hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends gcc \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements
-COPY requirements.txt .
-
-# Install deps in venv
-RUN python -m venv /venv \
-    && /venv/bin/pip install --no-cache-dir --upgrade pip \
-    && /venv/bin/pip install --no-cache-dir -r requirements.txt
-
-# ---- Runtime stage ----
-FROM python:3.11-slim
 WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
-# Copy venv from builder
-COPY --from=builder /venv /venv
-ENV PATH="/venv/bin:$PATH"
+# Stage 2: Runtime
+FROM python:3.11-slim
 
-# Copy app code
+WORKDIR /app
+COPY --from=builder /install /usr/local
 COPY . .
 
-# Run with Gunicorn (prod server)
-CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:8080", "app:create_app()"]
+EXPOSE 8080
+CMD ["gunicorn", "-w", "2", "-b", "0.0.0.0:8080", "app:create_app()"]
