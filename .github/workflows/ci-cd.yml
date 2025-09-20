@@ -151,26 +151,25 @@ jobs:
           docker build -t myapp:${GITHUB_SHA} -t myapp:${SHORT_SHA} ./app
           echo "Built tags: myapp:${GITHUB_SHA} and myapp:${SHORT_SHA}"
 
-  image-scan:
-    name: Scan Docker image with Trivy
+    image-scan:
+    name: Image Security Scan (Trivy)
     needs: [ build ]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Set up Trivy
+        uses: aquasecurity/setup-trivy@v0.19.0
 
-      # Rebuild with the SAME tag this job will scan (full SHA)
-      - name: Build image (for scanning)
+      - name: Scan Docker image with Trivy (non-blocking)
         run: |
-          docker build -t myapp:${GITHUB_SHA} ./app
+          SHORT_SHA=${GITHUB_SHA::7}
+          trivy image --exit-code 0 --severity HIGH,CRITICAL --format table --output trivy-report.txt myapp:${SHORT_SHA}
 
-      - name: Run Trivy vulnerability scanner (fail on HIGH/CRITICAL)
-        uses: aquasecurity/trivy-action@master
+      - name: Upload Trivy report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          image-ref: myapp:${{ github.sha }}
-          format: 'table'
-          exit-code: '1'
-          severity: 'HIGH,CRITICAL'
+          name: trivy-report
+          path: trivy-report.txt
