@@ -182,3 +182,25 @@ jobs:
           path: trivy-report.txt
           if-no-files-found: ignore
 
+  push:
+    name: Push image to Docker Hub
+    needs: [ build ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        run: |
+          SHORT_SHA=${GITHUB_SHA::7}
+          docker build -t markhor1995/test-app:${SHORT_SHA} -t markhor1995/test-app:latest ./app
+          docker push markhor1995/test-app:${SHORT_SHA}
+          docker push markhor1995/test-app:latest
+
+
