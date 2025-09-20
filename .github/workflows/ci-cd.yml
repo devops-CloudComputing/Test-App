@@ -150,7 +150,6 @@ jobs:
           SHORT_SHA=${GITHUB_SHA::7}
           docker build -t myapp:${GITHUB_SHA} -t myapp:${SHORT_SHA} ./app
           echo "Built tags: myapp:${GITHUB_SHA} and myapp:${SHORT_SHA}"
-
   image-scan:
     name: Image Security Scan (Trivy)
     needs: [ build ]
@@ -164,8 +163,7 @@ jobs:
 
       - name: Rebuild image for scan
         run: |
-          SHORT_SHA=${GITHUB_SHA::7}
-          docker build -t myapp:${SHORT_SHA} ./app
+          docker build -t myapp:${{ github.sha }} ./app
 
       - name: Scan Docker image with Trivy (non-blocking)
         uses: aquasecurity/trivy-action@0.20.0
@@ -173,6 +171,7 @@ jobs:
           image-ref: myapp:${{ github.sha }}
           severity: 'HIGH,CRITICAL'
           format: 'table'
+          output: trivy-report.txt
           exit-code: '0'
 
       - name: Upload Trivy report artifact
@@ -182,3 +181,4 @@ jobs:
           name: trivy-report
           path: trivy-report.txt
           if-no-files-found: ignore
+
