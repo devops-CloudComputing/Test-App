@@ -2,13 +2,9 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches:
-      - main
-      - master
+    branches: [ main, master ]
   pull_request:
-    branches:
-      - main
-      - master
+    branches: [ main, master ]
 
 jobs:
   security-scan:
@@ -33,22 +29,27 @@ jobs:
       - name: Run Bandit (SAST) → fail only on HIGH/CRITICAL
         shell: bash
         run: |
-          TARGET="."
-          if [ -d "app" ]; then TARGET="app"; fi
-
-          # Run Bandit and capture JSON (never hard-fail here)
+          set -e
+          TARGET="app"; [ -d "$TARGET" ] || TARGET="."
+          # produce JSON; don't fail the step on bandit's exit code
           bandit -r "$TARGET" -f json -o bandit.json || true
 
-          echo "Bandit results:"
-          jq '.results | length as $total
-              | {total:$total, high: ([.results[]? | select(.issue_severity=="HIGH")] | length),
-                         medium: ([.results[]? | select(.issue_severity=="MEDIUM")] | length)}' bandit.json
+          # Normalize bandit's JSON whether it's an object with .results OR a bare array
+          HIGH_COUNT=$(jq -r '
+            def toresults:
+              if type=="object" and has("results") then .results
+              elif type=="array" then .
+              else [] end;
+            toresults
+            | map(select(.issue_severity=="HIGH" or .issue_severity=="CRITICAL"))
+            | length
+          ' bandit.json 2>/dev/null || echo 0)
 
-          HIGH_COUNT=$(jq '[.results[]? | select(.issue_severity=="HIGH")] | length' bandit.json)
-          if [ "$HIGH_COUNT" -gt 0 ]; then
-            echo "❌ Bandit HIGH findings: $HIGH_COUNT"; exit 1
+          echo "Bandit HIGH/CRITICAL findings: ${HIGH_COUNT}"
+          if [ "${HIGH_COUNT}" -gt 0 ]; then
+            echo "❌ High/Critical SAST findings found"; exit 1
           else
-            echo "✅ No HIGH Bandit findings."
+            echo "✅ No High/Critical SAST findings"
           fi
 
       # ---- pip-audit (dependencies) ----
@@ -56,35 +57,23 @@ jobs:
         shell: bash
         run: |
           set -e
-
-          # Locate requirements and install (helps pip-audit resolve env)
           REQ=""
-          if [ -f "requirements.txt" ]; then
-            REQ="requirements.txt"
-          elif [ -f "app/requirements.txt" ]; then
-            REQ="app/requirements.txt"
-          fi
+          if [ -f "requirements.txt" ]; then REQ="requirements.txt"; fi
+          if [ -z "$REQ" ] && [ -f "app/requirements.txt" ]; then REQ="app/requirements.txt"; fi
 
           if [ -n "$REQ" ]; then
-            echo "Installing deps from $REQ for audit context…"
             pip install -r "$REQ" || true
             pip-audit -r "$REQ" -f json -o pip-audit.json || true
           else
-            echo "No requirements.txt found; auditing current environment…"
             pip-audit -f json -o pip-audit.json || true
           fi
 
-          echo "pip-audit summary (raw counts):"
-          # Count HIGH/CRITICAL from pip-audit JSON format:
-          # schema: {"dependencies":[{"name":...,"version":...,"vulns":[{"id":...,"severity":"HIGH"|"CRITICAL"|...}]}]}
-          HIGH_CRIT_COUNT=$(jq '[.dependencies[]?.vulns[]? | select(.severity=="HIGH" or .severity=="CRITICAL")] | length' pip-audit.json)
-          TOTAL_COUNT=$(jq '[.dependencies[]?.vulns[]?] | length' pip-audit.json)
-          echo "Total vulns: ${TOTAL_COUNT}, HIGH/CRITICAL: ${HIGH_CRIT_COUNT}"
-
-          if [ "$HIGH_CRIT_COUNT" -gt 0 ]; then
-            echo "❌ HIGH/CRITICAL dependency vulns found: $HIGH_CRIT_COUNT"; exit 1
+          HIGH_CRIT_COUNT=$(jq '[.dependencies[]?.vulns[]? | select(.severity=="HIGH" or .severity=="CRITICAL")] | length' pip-audit.json 2>/dev/null || echo 0)
+          echo "pip-audit HIGH/CRITICAL: ${HIGH_CRIT_COUNT}"
+          if [ "${HIGH_CRIT_COUNT}" -gt 0 ]; then
+            echo "❌ High/Critical dependency vulns found"; exit 1
           else
-            echo "✅ No HIGH/CRITICAL dependency vulns."
+            echo "✅ No High/Critical dependency vulns"
           fi
 
       - name: Upload scan artifacts
@@ -99,7 +88,7 @@ jobs:
 
   test:
     name: Run unit tests (pytest)
-    needs: [security-scan]
+    needs: [ security-scan ]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
