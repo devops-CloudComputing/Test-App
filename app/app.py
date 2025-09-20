@@ -1,4 +1,3 @@
-@'
 import os
 from flask import Flask, jsonify
 
@@ -25,4 +24,3 @@ def create_app():
 if __name__ == "__main__":
     app = create_app()
     app.run(host="0.0.0.0", port=8080)
-'@ | Out-File -Encoding UTF8 app\app.py
