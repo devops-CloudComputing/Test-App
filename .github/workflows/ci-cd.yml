@@ -31,10 +31,7 @@ jobs:
         run: |
           set -e
           TARGET="app"; [ -d "$TARGET" ] || TARGET="."
-          # produce JSON; don't fail the step on bandit's exit code
           bandit -r "$TARGET" -f json -o bandit.json || true
-
-          # Normalize bandit's JSON whether it's an object with .results OR a bare array
           HIGH_COUNT=$(jq -r '
             def toresults:
               if type=="object" and has("results") then .results
@@ -44,7 +41,6 @@ jobs:
             | map(select(.issue_severity=="HIGH" or .issue_severity=="CRITICAL"))
             | length
           ' bandit.json 2>/dev/null || echo 0)
-
           echo "Bandit HIGH/CRITICAL findings: ${HIGH_COUNT}"
           if [ "${HIGH_COUNT}" -gt 0 ]; then
             echo "❌ High/Critical SAST findings found"; exit 1
@@ -60,14 +56,12 @@ jobs:
           REQ=""
           if [ -f "requirements.txt" ]; then REQ="requirements.txt"; fi
           if [ -z "$REQ" ] && [ -f "app/requirements.txt" ]; then REQ="app/requirements.txt"; fi
-
           if [ -n "$REQ" ]; then
             pip install -r "$REQ" || true
             pip-audit -r "$REQ" -f json -o pip-audit.json || true
           else
             pip-audit -f json -o pip-audit.json || true
           fi
-
           HIGH_CRIT_COUNT=$(jq '[.dependencies[]?.vulns[]? | select(.severity=="HIGH" or .severity=="CRITICAL")] | length' pip-audit.json 2>/dev/null || echo 0)
           echo "pip-audit HIGH/CRITICAL: ${HIGH_CRIT_COUNT}"
           if [ "${HIGH_CRIT_COUNT}" -gt 0 ]; then
@@ -136,3 +130,28 @@ jobs:
           name: pytest-results
           path: pytest-results.xml
           if-no-files-found: ignore
+
+  build:
+    name: Build Docker image (with lint)
+    needs: [ test ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # Dockerfile lint (Hadolint)
+      - name: Lint Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: app/Dockerfile
+
+      # (optional) set up Buildx; plain docker build also works on runners
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Build the image and tag with short SHA
+      - name: Build image
+        run: |
+          SHORT_SHA=${GITHUB_SHA::7}
+          docker build -t myapp:${SHORT_SHA} ./app
+          echo "Built myapp:${SHORT_SHA}"
