@@ -151,7 +151,7 @@ jobs:
           docker build -t myapp:${GITHUB_SHA} -t myapp:${SHORT_SHA} ./app
           echo "Built tags: myapp:${GITHUB_SHA} and myapp:${SHORT_SHA}"
 
-    image-scan:
+  image-scan:
     name: Image Security Scan (Trivy)
     needs: [ build ]
     runs-on: ubuntu-latest
