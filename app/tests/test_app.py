@@ -1,4 +1,3 @@
-@'
 import os
 import pytest
 from app import create_app
@@ -24,4 +23,3 @@ def test_failcheck_can_fail(monkeypatch, client):
     monkeypatch.setenv("FAILCHECK", "true")
     resp = client.get("/failcheck")
     assert resp.status_code == 500
-'@ | Out-File -Encoding UTF8 app\tests\test_app.py
