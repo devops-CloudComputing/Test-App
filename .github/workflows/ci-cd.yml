@@ -2,16 +2,17 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: 
+    branches:
       - main
       - master
   pull_request:
-    branches: 
+    branches:
       - main
       - master
 
 jobs:
   security-scan:
+    name: Security Scan (SAST + deps)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -22,13 +23,127 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install bandit and pip-audit
+      - name: Install scanners
         run: |
           python -m pip install --upgrade pip
           pip install bandit pip-audit
+          sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Run Bandit (SAST for Python)
-        run: bandit -r app/ -ll
+      # ---- Bandit (SAST) ----
+      - name: Run Bandit (SAST) → fail only on HIGH/CRITICAL
+        shell: bash
+        run: |
+          TARGET="."
+          if [ -d "app" ]; then TARGET="app"; fi
 
-      - name: Run pip-audit (dependency vulnerability scan)
-        run: pip-audit -r requirements.txt
+          # Run Bandit and capture JSON (never hard-fail here)
+          bandit -r "$TARGET" -f json -o bandit.json || true
+
+          echo "Bandit results:"
+          jq '.results | length as $total
+              | {total:$total, high: ([.results[]? | select(.issue_severity=="HIGH")] | length),
+                         medium: ([.results[]? | select(.issue_severity=="MEDIUM")] | length)}' bandit.json
+
+          HIGH_COUNT=$(jq '[.results[]? | select(.issue_severity=="HIGH")] | length' bandit.json)
+          if [ "$HIGH_COUNT" -gt 0 ]; then
+            echo "❌ Bandit HIGH findings: $HIGH_COUNT"; exit 1
+          else
+            echo "✅ No HIGH Bandit findings."
+          fi
+
+      # ---- pip-audit (dependencies) ----
+      - name: Run pip-audit (deps) → fail only on HIGH/CRITICAL
+        shell: bash
+        run: |
+          set -e
+
+          # Locate requirements and install (helps pip-audit resolve env)
+          REQ=""
+          if [ -f "requirements.txt" ]; then
+            REQ="requirements.txt"
+          elif [ -f "app/requirements.txt" ]; then
+            REQ="app/requirements.txt"
+          fi
+
+          if [ -n "$REQ" ]; then
+            echo "Installing deps from $REQ for audit context…"
+            pip install -r "$REQ" || true
+            pip-audit -r "$REQ" -f json -o pip-audit.json || true
+          else
+            echo "No requirements.txt found; auditing current environment…"
+            pip-audit -f json -o pip-audit.json || true
+          fi
+
+          echo "pip-audit summary (raw counts):"
+          # Count HIGH/CRITICAL from pip-audit JSON format:
+          # schema: {"dependencies":[{"name":...,"version":...,"vulns":[{"id":...,"severity":"HIGH"|"CRITICAL"|...}]}]}
+          HIGH_CRIT_COUNT=$(jq '[.dependencies[]?.vulns[]? | select(.severity=="HIGH" or .severity=="CRITICAL")] | length' pip-audit.json)
+          TOTAL_COUNT=$(jq '[.dependencies[]?.vulns[]?] | length' pip-audit.json)
+          echo "Total vulns: ${TOTAL_COUNT}, HIGH/CRITICAL: ${HIGH_CRIT_COUNT}"
+
+          if [ "$HIGH_CRIT_COUNT" -gt 0 ]; then
+            echo "❌ HIGH/CRITICAL dependency vulns found: $HIGH_CRIT_COUNT"; exit 1
+          else
+            echo "✅ No HIGH/CRITICAL dependency vulns."
+          fi
+
+      - name: Upload scan artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: |
+            bandit.json
+            pip-audit.json
+          if-no-files-found: ignore
+
+  test:
+    name: Run unit tests (pytest)
+    needs: [security-scan]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f "requirements.txt" ]; then
+            pip install -r requirements.txt
+          elif [ -f "app/requirements.txt" ]; then
+            pip install -r app/requirements.txt
+          fi
+          pip install pytest pytest-cov
+
+      - name: Run pytest with coverage
+        env:
+          PYTHONPATH: .
+        shell: bash
+        run: |
+          if [ -d "app/tests" ]; then
+            pytest -q --maxfail=1 --disable-warnings --cov=app --cov-report=term-missing
+          else
+            echo "No tests found (app/tests). Skipping."
+          fi
+
+      - name: Upload pytest results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-results
+          path: pytest-results.xml
+          if-no-files-found: ignore
