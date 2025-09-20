@@ -25,7 +25,6 @@ jobs:
           pip install bandit pip-audit
           sudo apt-get update && sudo apt-get install -y jq
 
-      # ---- Bandit (SAST) ----
       - name: Run Bandit (SAST) → fail only on HIGH/CRITICAL
         shell: bash
         run: |
@@ -48,7 +47,6 @@ jobs:
             echo "✅ No High/Critical SAST findings"
           fi
 
-      # ---- pip-audit (dependencies) ----
       - name: Run pip-audit (deps) → fail only on HIGH/CRITICAL
         shell: bash
         run: |
@@ -147,11 +145,11 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build image
+      - name: Build image (tag with full SHA and short SHA)
         run: |
           SHORT_SHA=${GITHUB_SHA::7}
-          docker build -t myapp:${SHORT_SHA} ./app
-          echo "Built myapp:${SHORT_SHA}"
+          docker build -t myapp:${GITHUB_SHA} -t myapp:${SHORT_SHA} ./app
+          echo "Built tags: myapp:${GITHUB_SHA} and myapp:${SHORT_SHA}"
 
   image-scan:
     name: Scan Docker image with Trivy
@@ -164,11 +162,10 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Rebuild the image in this job's environment (images don't persist across jobs)
+      # Rebuild with the SAME tag this job will scan (full SHA)
       - name: Build image (for scanning)
         run: |
-          SHORT_SHA=${GITHUB_SHA::7}
-          docker build -t myapp:${SHORT_SHA} ./app
+          docker build -t myapp:${GITHUB_SHA} ./app
 
       - name: Run Trivy vulnerability scanner (fail on HIGH/CRITICAL)
         uses: aquasecurity/trivy-action@master
