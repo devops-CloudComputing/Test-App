@@ -1,0 +1,10 @@
+Flask app installed.
+
+Namespace: {{ .Values.namespace | default .Release.Namespace }}
+Service:   {{ include "flask-app.fullname" . }} (port {{ .Values.service.port }} → {{ .Values.service.targetPort }})
+
+Probes:
+  Readiness: {{ .Values.probes.readiness.path }}
+  Liveness:  {{ .Values.probes.liveness.path }}
+
+If HPA is enabled, it targets CPU at {{ .Values.autoscaling.targetCPUUtilizationPercentage }}%.

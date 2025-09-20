@@ -1,0 +1,31 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "flask-app.fullname" . }}
+  namespace: {{ .Values.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "flask-app.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "flask-app.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+      {{- range .Values.networkPolicy.allowFromNamespaces }}
+      - namespaceSelector:
+          matchLabels:
+            {{ .key }}: "{{ .value }}"
+      {{- end }}
+      {{- range .Values.networkPolicy.allowFromPods }}
+      - podSelector:
+          matchLabels:
+            {{ .key }}: "{{ .value }}"
+      {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.service.port }}
+{{- end }}
