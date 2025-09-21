@@ -8,7 +8,7 @@ on:
 
 jobs:
   security-scan:
-    name: Security Scanning (SAST + deps)
+    name: Security Scaning (SAST + deps)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -212,7 +212,7 @@ jobs:
       - name: Checkout (for chart path)
         uses: actions/checkout@v3
 
-      - name: SSH & deploy with Helm (namespace-scoped)
+      - name: SSH & deploy with Helm (namespace-scoped checks only)
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.EC2_HOST }}
@@ -224,28 +224,18 @@ jobs:
             set -euo pipefail
             SHORT_SHA="${GITHUB_SHA:0:7}"
 
-            # Decode kubeconfig from secret (namespace-scoped SA)
+            # Decode kubeconfig from secret
             mkdir -p ~/.kube
             echo "${DEPLOY_KUBECONFIG_B64}" | base64 -d > ~/.kube/sa-deployer.kubeconfig
             chmod 600 ~/.kube/sa-deployer.kubeconfig
             export KUBECONFIG=~/.kube/sa-deployer.kubeconfig
 
-            # Ensure kubectl & helm
-            if ! command -v kubectl >/dev/null 2>&1; then
-              curl -fsSLo /usr/local/bin/kubectl \
-                https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl
-              chmod +x /usr/local/bin/kubectl
-            fi
-            if ! command -v helm >/dev/null 2>&1; then
-              curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-            fi
-
-            # Namespace-scoped sanity checks (no cluster-wide calls)
+            # Namespace-scoped sanity checks
             kubectl version --short
             kubectl auth can-i get pods -n "${NAMESPACE}"
             kubectl auth can-i create deployments -n "${NAMESPACE}"
 
-            # Get chart content
+            # Pull chart repo content
             if [ ! -d ~/repo ]; then
               sudo apt-get update -y && sudo apt-get install -y git
               git clone https://github.com/${{ github.repository }} ~/repo
@@ -253,7 +243,11 @@ jobs:
               cd ~/repo && git pull --rebase
             fi
 
-            # Deploy (namespace must already exist; no cluster-scope ops)
+            # Ensure namespace exists + label
+            kubectl get ns "${NAMESPACE}" >/dev/null 2>&1 || kubectl create namespace "${NAMESPACE}"
+            kubectl label ns "${NAMESPACE}" name="${NAMESPACE}" --overwrite
+
+            # Deploy with Helm
             helm upgrade --install "${RELEASE}" \
               ~/repo/chart/flask-app \
               --namespace "${NAMESPACE}" \
@@ -261,7 +255,7 @@ jobs:
               --set image.tag="${SHORT_SHA}" \
               --set image.pullPolicy=IfNotPresent
 
-            # Rollout checks within namespace
+            # Rollout checks (+ diagnostics)
             set +e
             kubectl -n "${NAMESPACE}" rollout status deploy/"${RELEASE}" --timeout=180s
             R=$?
