@@ -208,11 +208,12 @@ jobs:
       RELEASE: flask-app
       NAMESPACE: apps
       IMAGE: markhor1995/test-app
+      DEPLOY_KUBECONFIG_B64: ${{ secrets.DEPLOY_KUBECONFIG_B64 }}   # 👈 Added here
     steps:
       - name: Checkout (for chart path)
         uses: actions/checkout@v3
 
-      - name: SSH & deploy with Helm (namespace-scoped checks only)
+      - name: SSH & deploy with Helm (debug)
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.EC2_HOST }}
@@ -224,21 +225,20 @@ jobs:
             set -euo pipefail
             SHORT_SHA="${GITHUB_SHA:0:7}"
 
-            # Decode kubeconfig from secret
+            # Decode kubeconfig from GitHub secret
             mkdir -p ~/.kube
             echo "${DEPLOY_KUBECONFIG_B64}" | base64 -d > ~/.kube/sa-deployer.kubeconfig
             chmod 600 ~/.kube/sa-deployer.kubeconfig
             export KUBECONFIG=~/.kube/sa-deployer.kubeconfig
 
-            # Namespace-scoped sanity checks
-            kubectl version --short
-            kubectl auth can-i get pods -n "${NAMESPACE}"
-            kubectl auth can-i create deployments -n "${NAMESPACE}"
+            # Quick sanity check
+            kubectl cluster-info
+            kubectl get ns
 
-            # Pull chart repo content
+            # Pull chart repo if not already present
             if [ ! -d ~/repo ]; then
               sudo apt-get update -y && sudo apt-get install -y git
-              git clone https://github.com/${{ github.repository }} ~/repo
+              git clone https://github.com/devops-CloudComputing/Test-App ~/repo
             else
               cd ~/repo && git pull --rebase
             fi
@@ -247,7 +247,7 @@ jobs:
             kubectl get ns "${NAMESPACE}" >/dev/null 2>&1 || kubectl create namespace "${NAMESPACE}"
             kubectl label ns "${NAMESPACE}" name="${NAMESPACE}" --overwrite
 
-            # Deploy with Helm
+            # Deploy with image tag = short SHA
             helm upgrade --install "${RELEASE}" \
               ~/repo/chart/flask-app \
               --namespace "${NAMESPACE}" \
@@ -255,7 +255,7 @@ jobs:
               --set image.tag="${SHORT_SHA}" \
               --set image.pullPolicy=IfNotPresent
 
-            # Rollout checks (+ diagnostics)
+            # Rollout check
             set +e
             kubectl -n "${NAMESPACE}" rollout status deploy/"${RELEASE}" --timeout=180s
             R=$?
