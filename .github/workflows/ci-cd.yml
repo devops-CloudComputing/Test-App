@@ -204,12 +204,12 @@ jobs:
     name: Deploy to Kubernetes (Helm on EC2)
     needs: [ push ]
     runs-on: ubuntu-latest
-     env:
+    env:
      RELEASE: flask-app
      NAMESPACE: apps
      IMAGE: markhor1995/test-app
      DEPLOY_KUBECONFIG_B64: ${{ secrets.DEPLOY_KUBECONFIG_B64 }}
-  steps:
+    steps:
     - name: Checkout (for chart path)
     - uses: actions/checkout@v3
 
