@@ -150,6 +150,7 @@ jobs:
           SHORT_SHA=${GITHUB_SHA::7}
           docker build -t myapp:${GITHUB_SHA} -t myapp:${SHORT_SHA} ./app
           echo "Built tags: myapp:${GITHUB_SHA} and myapp:${SHORT_SHA}"
+
   image-scan:
     name: Image Security Scan (Trivy)
     needs: [ build ]
@@ -204,65 +205,62 @@ jobs:
           docker push markhor1995/test-app:latest
 
   deploy:
-  name: Deploy to Kubernetes (Helm on EC2)
-  needs: [ push ]
-  runs-on: ubuntu-latest
-  env:
-    RELEASE: flask-app
-    NAMESPACE: apps
-    IMAGE: markhor1995/test-app
-    TAG: ${{ github.sha }}
-  steps:
-    - name: Checkout (for chart path)
-      uses: actions/checkout@v3
+    name: Deploy to Kubernetes (Helm on EC2)
+    needs: [ push ]
+    runs-on: ubuntu-latest
+    env:
+      RELEASE: flask-app
+      NAMESPACE: apps
+      IMAGE: markhor1995/test-app
+      TAG: ${{ github.sha }}
+    steps:
+      - name: Checkout (for chart path)
+        uses: actions/checkout@v3
 
-    - name: SSH & deploy with Helm
-      uses: appleboy/ssh-action@v1.0.3
-      with:
-        host: ${{ secrets.EC2_HOST }}
-        username: ${{ secrets.EC2_USER }}
-        key: ${{ secrets.EC2_KEY }}
-        script_stop: true
-        script: |
-          set -euo pipefail
+      - name: SSH & deploy with Helm
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_KEY }}
+          script_stop: true
+          script: |
+            set -euo pipefail
 
-          # Write non-admin kubeconfig from secret
-          mkdir -p ~/.kube
-          cat > ~/.kube/sa-deployer.kubeconfig <<'KUBECONFIG_EOF'
+            # Write non-admin kubeconfig from secret
+            mkdir -p ~/.kube
+            cat > ~/.kube/sa-deployer.kubeconfig <<'KUBECONFIG_EOF'
 ${{ secrets.DEPLOY_KUBECONFIG }}
 KUBECONFIG_EOF
-          chmod 600 ~/.kube/sa-deployer.kubeconfig
+            chmod 600 ~/.kube/sa-deployer.kubeconfig
 
-          # Install Helm if missing
-          if ! command -v helm >/dev/null 2>&1; then
-            curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-          fi
+            # Install Helm if missing
+            if ! command -v helm >/dev/null 2>&1; then
+              curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+            fi
 
-          # Clone or update your repo to get the chart
-          if [ ! -d ~/repo ]; then
-            sudo apt-get update -y && sudo apt-get install -y git
-            git clone https://github.com/${{ github.repository }} ~/repo
-          else
-            cd ~/repo && git pull --rebase
-          fi
+            # Clone or update your repo to get the chart
+            if [ ! -d ~/repo ]; then
+              sudo apt-get update -y && sudo apt-get install -y git
+              git clone https://github.com/${{ github.repository }} ~/repo
+            else
+              cd ~/repo && git pull --rebase
+            fi
 
-          # Ensure namespace exists + label (if your NetworkPolicy expects it)
-          kubectl --kubeconfig ~/.kube/sa-deployer.kubeconfig get ns ${NAMESPACE} >/dev/null 2>&1 || \
-            kubectl --kubeconfig ~/.kube/sa-deployer.kubeconfig create namespace ${NAMESPACE}
-          kubectl --kubeconfig ~/.kube/sa-deployer.kubeconfig label ns ${NAMESPACE} name=${NAMESPACE} --overwrite
+            # Ensure namespace exists + label (if your NetworkPolicy expects it)
+            kubectl --kubeconfig ~/.kube/sa-deployer.kubeconfig get ns ${NAMESPACE} >/dev/null 2>&1 || \
+              kubectl --kubeconfig ~/.kube/sa-deployer.kubeconfig create namespace ${NAMESPACE}
+            kubectl --kubeconfig ~/.kube/sa-deployer.kubeconfig label ns ${NAMESPACE} name=${NAMESPACE} --overwrite
 
-          # Deploy (override image repo/tag with what CI pushed)
-          helm upgrade --install ${RELEASE} \
-            ~/repo/chart/flask-app \
-            --kubeconfig ~/.kube/sa-deployer.kubeconfig \
-            --namespace ${NAMESPACE} \
-            --set image.repository=${IMAGE} \
-            --set image.tag=${TAG} \
-            --set image.pullPolicy=IfNotPresent
+            # Deploy (override image repo/tag with what CI pushed)
+            helm upgrade --install ${RELEASE} \
+              ~/repo/chart/flask-app \
+              --kubeconfig ~/.kube/sa-deployer.kubeconfig \
+              --namespace ${NAMESPACE} \
+              --set image.repository=${IMAGE} \
+              --set image.tag=${TAG} \
+              --set image.pullPolicy=IfNotPresent
 
-          # Rollout checks
-          kubectl --kubeconfig ~/.kube/sa-deployer.kubeconfig -n ${NAMESPACE} rollout status deploy/${RELEASE} --timeout=180s
-          kubectl --kubeconfig ~/.kube/sa-deployer.kubeconfig -n ${NAMESPACE} get pods,svc,hpa
-
-
-
+            # Rollout checks
+            kubectl --kubeconfig ~/.kube/sa-deployer.kubeconfig -n ${NAMESPACE} rollout status deploy/${RELEASE} --timeout=180s
+            kubectl --kubeconfig ~/.kube/sa-deployer.kubeconfig -n ${NAMESPACE} get pods,svc,hpa
