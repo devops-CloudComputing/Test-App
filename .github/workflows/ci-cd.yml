@@ -197,6 +197,8 @@ jobs:
         run: |
           SHORT_SHA=${GITHUB_SHA::7}
           docker build -t markhor1995/test-app:${SHORT_SHA} -t markhor1995/test-app:latest ./app
+          docker push markhor1995/test-app:${SHORT_SHA}
+          docker push markhor1995/test-app:latest
 
   deploy:
     name: Deploy to Kubernetes (Helm on EC2)
@@ -220,16 +222,14 @@ jobs:
           envs: RELEASE,NAMESPACE,IMAGE,GITHUB_SHA
           script: |
             set -euo pipefail
-            set -x  # debug echo
+            set -x
 
             SHORT_SHA="${GITHUB_SHA:0:7}"
 
-            # Write kubeconfig from secret
             mkdir -p ~/.kube
             printf '%s' "${{ secrets.DEPLOY_KUBECONFIG }}" > ~/.kube/sa-deployer.kubeconfig
             chmod 600 ~/.kube/sa-deployer.kubeconfig
 
-            # Ensure kubectl & helm exist
             if ! command -v kubectl >/dev/null 2>&1; then
               curl -fsSLo /usr/local/bin/kubectl https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl
               chmod +x /usr/local/bin/kubectl
@@ -238,11 +238,9 @@ jobs:
               curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
             fi
 
-            # Quick sanity on kube access
             kubectl --kubeconfig ~/.kube/sa-deployer.kubeconfig cluster-info
             kubectl --kubeconfig ~/.kube/sa-deployer.kubeconfig get ns
 
-            # Get chart contents
             if [ ! -d ~/repo ]; then
               sudo apt-get update -y && sudo apt-get install -y git
               git clone https://github.com/${{ github.repository }} ~/repo
@@ -250,27 +248,13 @@ jobs:
               cd ~/repo && git pull --rebase
             fi
 
-            # Show tree for chart path
             ls -lah ~/repo/chart || true
             ls -lah ~/repo/chart/flask-app || true
 
-            # Ensure namespace exists + label
             kubectl --kubeconfig ~/.kube/sa-deployer.kubeconfig get ns "${NAMESPACE}" >/dev/null 2>&1 || \
               kubectl --kubeconfig ~/.kube/sa-deployer.kubeconfig create namespace "${NAMESPACE}"
             kubectl --kubeconfig ~/.kube/sa-deployer.kubeconfig label ns "${NAMESPACE}" name="${NAMESPACE}" --overwrite
 
-            # Dry-run template to catch values/path errors early
-            helm template "${RELEASE}" \
-              ~/repo/chart/flask-app \
-              --kubeconfig ~/.kube/sa-deployer.kubeconfig \
-              --namespace "${NAMESPACE}" \
-              --set image.repository="${IMAGE}" \
-              --set image.tag="${SHORT_SHA}" \
-              --set image.pullPolicy=IfNotPresent >/tmp/manifest.yaml
-
-            head -n 50 /tmp/manifest.yaml || true
-
-            # Deploy
             helm upgrade --install "${RELEASE}" \
               ~/repo/chart/flask-app \
               --kubeconfig ~/.kube/sa-deployer.kubeconfig \
@@ -279,7 +263,6 @@ jobs:
               --set image.tag="${SHORT_SHA}" \
               --set image.pullPolicy=IfNotPresent
 
-            # Rollout checks with diagnostics on failure
             set +e
             kubectl --kubeconfig ~/.kube/sa-deployer.kubeconfig -n "${NAMESPACE}" rollout status deploy/"${RELEASE}" --timeout=180s
             R=$?
@@ -290,9 +273,3 @@ jobs:
               exit $R
             fi
             set -e
-
-
-          docker push markhor1995/test-app:${SHORT_SHA}
-          docker push markhor1995/test-app:latest
-
-  
