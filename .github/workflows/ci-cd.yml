@@ -198,6 +198,208 @@ jobs:
           SHORT_SHA=${GITHUB_SHA::7}
           docker build -t markhor1995/test-app:${SHORT_SHA} -t markhor1995/test-app:latest ./app
 
+  dname: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  security-scan:
+    name: Security Scaning (SAST + deps)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install scanners
+        run: |
+          python -m pip install --upgrade pip
+          pip install bandit pip-audit
+          sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Run Bandit (SAST) - fail only on HIGH/CRITICAL
+        shell: bash
+        run: |
+          set -e
+          TARGET="app"; [ -d "$TARGET" ] || TARGET="."
+          bandit -r "$TARGET" -f json -o bandit.json || true
+          HIGH_COUNT=$(jq -r '
+            def toresults:
+              if type=="object" and has("results") then .results
+              elif type=="array" then .
+              else [] end;
+            toresults
+            | map(select(.issue_severity=="HIGH" or .issue_severity=="CRITICAL"))
+            | length
+          ' bandit.json 2>/dev/null || echo 0)
+          echo "Bandit HIGH/CRITICAL findings: ${HIGH_COUNT}"
+          if [ "${HIGH_COUNT}" -gt 0 ]; then
+            echo "High/Critical SAST findings found"; exit 1
+          fi
+
+      - name: Run pip-audit (deps) - fail only on HIGH/CRITICAL
+        shell: bash
+        run: |
+          set -e
+          REQ=""
+          if [ -f "requirements.txt" ]; then REQ="requirements.txt"; fi
+          if [ -z "$REQ" ] && [ -f "app/requirements.txt" ]; then REQ="app/requirements.txt"; fi
+          if [ -n "$REQ" ]; then
+            pip install -r "$REQ" || true
+            pip-audit -r "$REQ" -f json -o pip-audit.json || true
+          else
+            pip-audit -f json -o pip-audit.json || true
+          fi
+          HIGH_CRIT_COUNT=$(jq '[.dependencies[]?.vulns[]? | select(.severity=="HIGH" or .severity=="CRITICAL")] | length' pip-audit.json 2>/dev/null || echo 0)
+          echo "pip-audit HIGH/CRITICAL: ${HIGH_CRIT_COUNT}"
+          if [ "${HIGH_CRIT_COUNT}" -gt 0 ]; then
+            echo "High/Critical dependency vulns found"; exit 1
+          fi
+
+      - name: Upload scan artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: |
+            bandit.json
+            pip-audit.json
+          if-no-files-found: ignore
+
+  test:
+    name: Run unit tests (pytest)
+    needs: [ security-scan ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f "requirements.txt" ]; then
+            pip install -r requirements.txt
+          elif [ -f "app/requirements.txt" ]; then
+            pip install -r app/requirements.txt
+          fi
+          pip install pytest pytest-cov
+
+      - name: Run pytest with coverage
+        env:
+          PYTHONPATH: .
+        shell: bash
+        run: |
+          if [ -d "app/tests" ]; then
+            pytest -q --maxfail=1 --disable-warnings --cov=app --cov-report=term-missing --junitxml=pytest-results.xml
+          else
+            echo "No tests found (app/tests). Skipping."
+          fi
+
+      - name: Upload pytest results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-results
+          path: pytest-results.xml
+          if-no-files-found: ignore
+
+  build:
+    name: Build Docker image (with lint)
+    needs: [ test ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Lint Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: app/Dockerfile
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (tag with full SHA and short SHA)
+        run: |
+          SHORT_SHA=${GITHUB_SHA::7}
+          docker build -t myapp:${GITHUB_SHA} -t myapp:${SHORT_SHA} ./app
+          echo "Built tags: myapp:${GITHUB_SHA} and myapp:${SHORT_SHA}"
+
+  image-scan:
+    name: Image Security Scan (Trivy)
+    needs: [ build ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Rebuild image for scan
+        run: |
+          docker build -t myapp:${{ github.sha }} ./app
+
+      - name: Scan Docker image with Trivy (non-blocking)
+        uses: aquasecurity/trivy-action@0.20.0
+        with:
+          image-ref: myapp:${{ github.sha }}
+          severity: 'HIGH,CRITICAL'
+          format: 'table'
+          output: trivy-report.txt
+          exit-code: '0'
+
+      - name: Upload Trivy report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report
+          path: trivy-report.txt
+          if-no-files-found: ignore
+
+  push:
+    name: Push image to Docker Hub
+    needs: [ build ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        run: |
+          SHORT_SHA=${GITHUB_SHA::7}
+          docker build -t markhor1995/test-app:${SHORT_SHA} -t markhor1995/test-app:latest ./app
+          docker push markhor1995/test-app:${SHORT_SHA}
+          docker push markhor1995/test-app:latest
+
   deploy:
     name: Deploy to Kubernetes (Helm on EC2)
     needs: [ push ]
@@ -206,12 +408,11 @@ jobs:
       RELEASE: flask-app
       NAMESPACE: apps
       IMAGE: markhor1995/test-app
-      DEPLOY_KUBECONFIG_B64: ${{ secrets.DEPLOY_KUBECONFIG_B64 }}   # 👈 Added here
     steps:
       - name: Checkout (for chart path)
         uses: actions/checkout@v3
 
-      - name: SSH & deploy with Helm (debug)
+      - name: SSH & deploy with Helm (namespace-scoped checks only)
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.EC2_HOST }}
@@ -223,20 +424,21 @@ jobs:
             set -euo pipefail
             SHORT_SHA="${GITHUB_SHA:0:7}"
 
-            # Decode kubeconfig from GitHub secret
+            # Decode kubeconfig from secret
             mkdir -p ~/.kube
             echo "${DEPLOY_KUBECONFIG_B64}" | base64 -d > ~/.kube/sa-deployer.kubeconfig
             chmod 600 ~/.kube/sa-deployer.kubeconfig
             export KUBECONFIG=~/.kube/sa-deployer.kubeconfig
 
-            # Quick sanity check
-            kubectl cluster-info
-            kubectl get ns
+            # Namespace-scoped sanity checks
+            kubectl version --short
+            kubectl auth can-i get pods -n "${NAMESPACE}"
+            kubectl auth can-i create deployments -n "${NAMESPACE}"
 
-            # Pull chart repo if not already present
+            # Pull chart repo content
             if [ ! -d ~/repo ]; then
               sudo apt-get update -y && sudo apt-get install -y git
-              git clone https://github.com/devops-CloudComputing/Test-App ~/repo
+              git clone https://github.com/${{ github.repository }} ~/repo
             else
               cd ~/repo && git pull --rebase
             fi
@@ -245,7 +447,7 @@ jobs:
             kubectl get ns "${NAMESPACE}" >/dev/null 2>&1 || kubectl create namespace "${NAMESPACE}"
             kubectl label ns "${NAMESPACE}" name="${NAMESPACE}" --overwrite
 
-            # Deploy with image tag = short SHA
+            # Deploy with Helm
             helm upgrade --install "${RELEASE}" \
               ~/repo/chart/flask-app \
               --namespace "${NAMESPACE}" \
@@ -253,7 +455,7 @@ jobs:
               --set image.tag="${SHORT_SHA}" \
               --set image.pullPolicy=IfNotPresent
 
-            # Rollout check
+            # Rollout checks (+ diagnostics)
             set +e
             kubectl -n "${NAMESPACE}" rollout status deploy/"${RELEASE}" --timeout=180s
             R=$?
@@ -264,7 +466,3 @@ jobs:
               exit $R
             fi
             set -e
-
-            
-
-  
