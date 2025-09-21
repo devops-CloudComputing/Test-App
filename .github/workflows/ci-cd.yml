@@ -1,11 +1,13 @@
 name: CI/CD Pipeline
-
-on:
+'on':
   push:
-    branches: [ main, master ]
+    branches:
+      - main
+      - master
   pull_request:
-    branches: [ main, master ]
-
+    branches:
+      - main
+      - master
 jobs:
   security-scan:
     name: Security Scaning (SAST + deps)
@@ -13,18 +15,15 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Install scanners
         run: |
           python -m pip install --upgrade pip
           pip install bandit pip-audit
           sudo apt-get update && sudo apt-get install -y jq
-
       - name: Run Bandit (SAST) - fail only on HIGH/CRITICAL
         shell: bash
         run: |
@@ -44,26 +43,34 @@ jobs:
           if [ "${HIGH_COUNT}" -gt 0 ]; then
             echo "High/Critical SAST findings found"; exit 1
           fi
-
       - name: Run pip-audit (deps) - fail only on HIGH/CRITICAL
         shell: bash
-        run: |
+        run: >
           set -e
+
           REQ=""
+
           if [ -f "requirements.txt" ]; then REQ="requirements.txt"; fi
-          if [ -z "$REQ" ] && [ -f "app/requirements.txt" ]; then REQ="app/requirements.txt"; fi
+
+          if [ -z "$REQ" ] && [ -f "app/requirements.txt" ]; then
+          REQ="app/requirements.txt"; fi
+
           if [ -n "$REQ" ]; then
             pip install -r "$REQ" || true
             pip-audit -r "$REQ" -f json -o pip-audit.json || true
           else
             pip-audit -f json -o pip-audit.json || true
           fi
-          HIGH_CRIT_COUNT=$(jq '[.dependencies[]?.vulns[]? | select(.severity=="HIGH" or .severity=="CRITICAL")] | length' pip-audit.json 2>/dev/null || echo 0)
+
+          HIGH_CRIT_COUNT=$(jq '[.dependencies[]?.vulns[]? |
+          select(.severity=="HIGH" or .severity=="CRITICAL")] | length'
+          pip-audit.json 2>/dev/null || echo 0)
+
           echo "pip-audit HIGH/CRITICAL: ${HIGH_CRIT_COUNT}"
+
           if [ "${HIGH_CRIT_COUNT}" -gt 0 ]; then
             echo "High/Critical dependency vulns found"; exit 1
           fi
-
       - name: Upload scan artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -73,28 +80,25 @@ jobs:
             bandit.json
             pip-audit.json
           if-no-files-found: ignore
-
   test:
     name: Run unit tests (pytest)
-    needs: [ security-scan ]
+    needs:
+      - security-scan
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Cache pip
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt') }}
+          key: '${{ runner.os }}-pip-${{ hashFiles(''**/requirements*.txt'') }}'
           restore-keys: |
             ${{ runner.os }}-pip-
-
       - name: Install dependencies
         shell: bash
         run: |
@@ -105,7 +109,6 @@ jobs:
             pip install -r app/requirements.txt
           fi
           pip install pytest pytest-cov
-
       - name: Run pytest with coverage
         env:
           PYTHONPATH: .
@@ -116,7 +119,6 @@ jobs:
           else
             echo "No tests found (app/tests). Skipping."
           fi
-
       - name: Upload pytest results
         if: always()
         uses: actions/upload-artifact@v4
@@ -124,53 +126,46 @@ jobs:
           name: pytest-results
           path: pytest-results.xml
           if-no-files-found: ignore
-
   build:
     name: Build Docker image (with lint)
-    needs: [ test ]
+    needs:
+      - test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-
       - name: Lint Dockerfile
         uses: hadolint/hadolint-action@v3.1.0
         with:
           dockerfile: app/Dockerfile
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
       - name: Build image (tag with full SHA and short SHA)
         run: |
           SHORT_SHA=${GITHUB_SHA::7}
           docker build -t myapp:${GITHUB_SHA} -t myapp:${SHORT_SHA} ./app
           echo "Built tags: myapp:${GITHUB_SHA} and myapp:${SHORT_SHA}"
-
   image-scan:
     name: Image Security Scan (Trivy)
-    needs: [ build ]
+    needs:
+      - build
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
       - name: Rebuild image for scan
         run: |
           docker build -t myapp:${{ github.sha }} ./app
-
       - name: Scan Docker image with Trivy (non-blocking)
         uses: aquasecurity/trivy-action@0.20.0
         with:
-          image-ref: myapp:${{ github.sha }}
+          image-ref: 'myapp:${{ github.sha }}'
           severity: 'HIGH,CRITICAL'
-          format: 'table'
+          format: table
           output: trivy-report.txt
           exit-code: '0'
-
       - name: Upload Trivy report artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -178,100 +173,79 @@ jobs:
           name: trivy-report
           path: trivy-report.txt
           if-no-files-found: ignore
-
   push:
     name: Push image to Docker Hub
-    needs: [ build ]
+    needs:
+      - build
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v3
-
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
+          username: '${{ secrets.DOCKERHUB_USERNAME }}'
+          password: '${{ secrets.DOCKERHUB_TOKEN }}'
       - name: Build and push
-        run: |
+        run: >
           SHORT_SHA=${GITHUB_SHA::7}
-          docker build -t markhor1995/test-app:${SHORT_SHA} -t markhor1995/test-app:latest ./app
+
+          docker build -t markhor1995/test-app:${SHORT_SHA} -t
+          markhor1995/test-app:latest ./app
+
           docker push markhor1995/test-app:${SHORT_SHA}
+
           docker push markhor1995/test-app:latest
+  deploy: null
+  name: Deploy to Kubernetes (Helm on EC2)
+  needs:
+    - push
+  runs-on: ubuntu-latest
+  env:
+    RELEASE: flask-app
+    NAMESPACE: apps
+    IMAGE: markhor1995/test-app
+  steps:
+    - name: Checkout (for chart path)
+      uses: actions/checkout@v3
+    - name: SSH & deploy with Helm (debug)
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: '${{ secrets.EC2_HOST }}'
+        username: '${{ secrets.EC2_USER }}'
+        key: '${{ secrets.EC2_KEY }}'
+        script_stop: true
+        envs: 'RELEASE,NAMESPACE,IMAGE,GITHUB_SHA,DEPLOY_KUBECONFIG_B64'
+        script: >
+          set -euo pipefail
 
-  deploy:
-    name: Deploy to Kubernetes (Helm on EC2)
-    needs: [ push ]
-    runs-on: ubuntu-latest
-    env:
-      RELEASE: flask-app
-      NAMESPACE: apps
-      IMAGE: markhor1995/test-app
-    steps:
-      - name: Checkout (for chart path)
-        uses: actions/checkout@v3
+          SHORT_SHA="${GITHUB_SHA:0:7}"
 
-      - name: SSH & deploy with Helm
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_KEY }}
-          script_stop: true
-          envs: RELEASE,NAMESPACE,IMAGE,GITHUB_SHA,DEPLOY_KUBECONFIG_B64
-          script: |
-            set -euo pipefail
-            SHORT_SHA="${GITHUB_SHA:0:7}"
 
-            # Decode kubeconfig from secret
-            mkdir -p ~/.kube
-            echo "${DEPLOY_KUBECONFIG_B64}" | base64 -d > ~/.kube/sa-deployer.kubeconfig
-            chmod 600 ~/.kube/sa-deployer.kubeconfig
-            export KUBECONFIG=~/.kube/sa-deployer.kubeconfig
+          # Decode kubeconfig from secret
 
-            # Ensure kubectl & helm
-            if ! command -v kubectl >/dev/null 2>&1; then
-              curl -fsSLo /usr/local/bin/kubectl \
-                https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl
-              chmod +x /usr/local/bin/kubectl
-            fi
-            if ! command -v helm >/dev/null 2>&1; then
-              curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-            fi
+          mkdir -p ~/.kube
 
-            # Quick sanity
-            kubectl cluster-info
-            kubectl get ns
+          echo "${DEPLOY_KUBECONFIG_B64}" | base64 -d >
+          ~/.kube/sa-deployer.kubeconfig
 
-            # Pull chart repo content
-            if [ ! -d ~/repo ]; then
-              sudo apt-get update -y && sudo apt-get install -y git
-              git clone https://github.com/${{ github.repository }} ~/repo
-            else
-              cd ~/repo && git pull --rebase
-            fi
+          chmod 600 ~/.kube/sa-deployer.kubeconfig
 
-            # Ensure namespace exists + label
-            kubectl get ns "${NAMESPACE}" >/dev/null 2>&1 || kubectl create namespace "${NAMESPACE}"
-            kubectl label ns "${NAMESPACE}" name="${NAMESPACE}" --overwrite
+          export KUBECONFIG=~/.kube/sa-deployer.kubeconfig
 
-            # Deploy with image tag = short SHA
-            helm upgrade --install "${RELEASE}" \
-              ~/repo/chart/flask-app \
-              --namespace "${NAMESPACE}" \
-              --set image.repository="${IMAGE}" \
-              --set image.tag="${SHORT_SHA}" \
-              --set image.pullPolicy=IfNotPresent
 
-            # Rollout checks
-            set +e
-            kubectl -n "${NAMESPACE}" rollout status deploy/"${RELEASE}" --timeout=180s
-            R=$?
-            kubectl -n "${NAMESPACE}" get pods,svc,hpa -o wide
-            if [ $R -ne 0 ]; then
-              kubectl -n "${NAMESPACE}" describe deploy "${RELEASE}" || true
-              kubectl -n "${NAMESPACE}" describe pods || true
-              exit $R
-            fi
-            set -e
+          # Quick sanity
+
+          kubectl cluster-info
+
+          kubectl get ns
+
+
+          # Deploy
+
+          helm upgrade --install "${RELEASE}" \
+            ~/repo/chart/flask-app \
+            --namespace "${NAMESPACE}" \
+            --set image.repository="${IMAGE}" \
+            --set image.tag="${SHORT_SHA}" \
+            --set image.pullPolicy=IfNotPresent
