@@ -197,8 +197,6 @@ jobs:
         run: |
           SHORT_SHA=${GITHUB_SHA::7}
           docker build -t markhor1995/test-app:${SHORT_SHA} -t markhor1995/test-app:latest ./app
-          docker push markhor1995/test-app:${SHORT_SHA}
-          docker push markhor1995/test-app:latest
 
   deploy:
     name: Deploy to Kubernetes (Helm on EC2)
@@ -208,6 +206,7 @@ jobs:
       RELEASE: flask-app
       NAMESPACE: apps
       IMAGE: markhor1995/test-app
+      DEPLOY_KUBECONFIG_B64: ${{ secrets.DEPLOY_KUBECONFIG_B64 }}   # 👈 Added here
     steps:
       - name: Checkout (for chart path)
         uses: actions/checkout@v3
@@ -224,30 +223,20 @@ jobs:
             set -euo pipefail
             SHORT_SHA="${GITHUB_SHA:0:7}"
 
-            # Decode kubeconfig from secret
+            # Decode kubeconfig from GitHub secret
             mkdir -p ~/.kube
             echo "${DEPLOY_KUBECONFIG_B64}" | base64 -d > ~/.kube/sa-deployer.kubeconfig
             chmod 600 ~/.kube/sa-deployer.kubeconfig
             export KUBECONFIG=~/.kube/sa-deployer.kubeconfig
 
-            # Ensure kubectl & helm
-            if ! command -v kubectl >/dev/null 2>&1; then
-              curl -fsSLo /usr/local/bin/kubectl \
-                https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl
-              chmod +x /usr/local/bin/kubectl
-            fi
-            if ! command -v helm >/dev/null 2>&1; then
-              curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-            fi
-
-            # Quick sanity
+            # Quick sanity check
             kubectl cluster-info
             kubectl get ns
 
-            # Pull chart repo content (needed for ~/repo/chart/flask-app)
+            # Pull chart repo if not already present
             if [ ! -d ~/repo ]; then
               sudo apt-get update -y && sudo apt-get install -y git
-              git clone https://github.com/${{ github.repository }} ~/repo
+              git clone https://github.com/devops-CloudComputing/Test-App ~/repo
             else
               cd ~/repo && git pull --rebase
             fi
@@ -264,7 +253,7 @@ jobs:
               --set image.tag="${SHORT_SHA}" \
               --set image.pullPolicy=IfNotPresent
 
-            # Rollout checks (+ diagnostics)
+            # Rollout check
             set +e
             kubectl -n "${NAMESPACE}" rollout status deploy/"${RELEASE}" --timeout=180s
             R=$?
@@ -275,3 +264,8 @@ jobs:
               exit $R
             fi
             set -e
+
+          docker push markhor1995/test-app:${SHORT_SHA}
+          docker push markhor1995/test-app:latest
+
+  
