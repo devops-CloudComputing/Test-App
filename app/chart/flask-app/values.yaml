@@ -49,7 +49,7 @@ env:
   APP_NAME: "flask-sample"
 
 # Sensitive env vars → rendered into a Secret
-secretEnv:
+secretEnv: {}
   # Example:
   # DB_PASSWORD: "supersecret"
 
