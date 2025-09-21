@@ -226,11 +226,13 @@ jobs:
             set -x
             SHORT_SHA="${GITHUB_SHA:0:7}"
 
+            # kubeconfig
             mkdir -p ~/.kube
             echo "${DEPLOY_KUBECONFIG_B64}" | base64 -d > ~/.kube/sa-deployer.kubeconfig
             chmod 600 ~/.kube/sa-deployer.kubeconfig
             export KUBECONFIG=~/.kube/sa-deployer.kubeconfig
 
+            # kubectl + helm
             if ! command -v kubectl >/dev/null 2>&1; then
               curl -fsSLo /usr/local/bin/kubectl \
                 "https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl"
@@ -240,25 +242,60 @@ jobs:
               curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
             fi
 
+            # RBAC sanity (namespace-scoped)
             kubectl -n "${NAMESPACE}" auth can-i get pods
             kubectl -n "${NAMESPACE}" auth can-i create deployments
-            kubectl -n "${NAMESPACE}" get deploy || true
 
-            # Fetch chart (fixed)
+            # Fetch/refresh repo
             if [ -d "$HOME/repo" ]; then
               cd "$HOME/repo" && git pull --rebase
             else
               sudo apt-get update -y && sudo apt-get install -y git
               git clone "https://github.com/${GITHUB_REPOSITORY}" "$HOME/repo"
+              cd "$HOME/repo"
             fi
 
-            helm upgrade --install "${RELEASE}" \
+            echo "== repo tree (top 3 levels) =="
+            find "$HOME/repo" -maxdepth 3 -type d -print
+
+            # Locate Helm chart directory (looks for Chart.yaml)
+            CHART_DIR=""
+            for p in \
               "$HOME/repo/chart/flask-app" \
+              "$HOME/repo/charts/flask-app" \
+              "$HOME/repo/helm/flask-app" \
+              "$HOME/repo/app/chart/flask-app" \
+              "$HOME/repo"; do
+              if [ -f "$p/Chart.yaml" ]; then
+                CHART_DIR="$p"
+                break
+              fi
+            done
+
+            # Last resort: search anywhere up to 4 levels for a Chart.yaml that contains 'name: flask-app'
+            if [ -z "$CHART_DIR" ]; then
+              CANDIDATE="$(grep -RIl --include=Chart.yaml -m1 '^name: *flask-app *$' "$HOME/repo" || true)"
+              if [ -n "$CANDIDATE" ]; then
+                CHART_DIR="$(dirname "$CANDIDATE")"
+              fi
+            fi
+
+            if [ -z "$CHART_DIR" ]; then
+              echo "❌ Could not find Helm chart (Chart.yaml) for 'flask-app' in repo. Please confirm the path."
+              exit 1
+            fi
+            echo "✅ Using CHART_DIR=$CHART_DIR"
+            ls -la "$CHART_DIR"
+
+            # Deploy
+            helm upgrade --install "${RELEASE}" \
+              "$CHART_DIR" \
               --namespace "${NAMESPACE}" \
               --set image.repository="${IMAGE}" \
               --set image.tag="${SHORT_SHA}" \
               --set image.pullPolicy=IfNotPresent
 
+            # Rollout checks
             set +e
             kubectl -n "${NAMESPACE}" rollout status deploy/"${RELEASE}" --timeout=180s
             R=$?
@@ -269,5 +306,3 @@ jobs:
               exit $R
             fi
             set -e
-
-            
