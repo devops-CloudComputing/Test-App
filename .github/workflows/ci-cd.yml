@@ -240,28 +240,25 @@ jobs:
               curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
             fi
 
-            # Namespace-scoped checks (no cluster-scope)
             kubectl -n "${NAMESPACE}" auth can-i get pods
             kubectl -n "${NAMESPACE}" auth can-i create deployments
             kubectl -n "${NAMESPACE}" get deploy || true
 
-            # Fetch chart
-            if [ ! -d ~/repo ]; then
-              sudo apt-get update -y && sudo apt-get install -y git
-              git clone "https://github.com/${GITHUB_REPOSITORY}" ~/repo
+            # Fetch chart (fixed)
+            if [ -d "$HOME/repo" ]; then
+              cd "$HOME/repo" && git pull --rebase
             else
-              cd ~/repo && git pull --rebase
+              sudo apt-get update -y && sudo apt-get install -y git
+              git clone "https://github.com/${GITHUB_REPOSITORY}" "$HOME/repo"
             fi
 
-            # Deploy
             helm upgrade --install "${RELEASE}" \
-              ~/repo/chart/flask-app \
+              "$HOME/repo/chart/flask-app" \
               --namespace "${NAMESPACE}" \
               --set image.repository="${IMAGE}" \
               --set image.tag="${SHORT_SHA}" \
               --set image.pullPolicy=IfNotPresent
 
-            # Rollout checks
             set +e
             kubectl -n "${NAMESPACE}" rollout status deploy/"${RELEASE}" --timeout=180s
             R=$?
@@ -272,3 +269,5 @@ jobs:
               exit $R
             fi
             set -e
+
+            
