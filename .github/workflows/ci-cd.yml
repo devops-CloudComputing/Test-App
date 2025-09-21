@@ -208,7 +208,7 @@ jobs:
       RELEASE: flask-app
       NAMESPACE: apps
       IMAGE: markhor1995/test-app
-      TAG: ${{ github.sha }}
+      # We'll compute SHORT_SHA from GITHUB_SHA on the remote host
     steps:
       - name: Checkout (for chart path)
         uses: actions/checkout@v3
@@ -220,10 +220,14 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_KEY }}
           script_stop: true
+          # 👇 Make these env vars available on the remote session
+          envs: RELEASE,NAMESPACE,IMAGE,GITHUB_SHA
           script: |
             set -euo pipefail
 
-            # Write non-admin kubeconfig from secret
+            # Compute the short SHA to match the tag we pushed
+            SHORT_SHA="${GITHUB_SHA:0:7}"
+
             mkdir -p ~/.kube
             printf '%s' "${{ secrets.DEPLOY_KUBECONFIG }}" > ~/.kube/sa-deployer.kubeconfig
             chmod 600 ~/.kube/sa-deployer.kubeconfig
@@ -241,19 +245,23 @@ jobs:
               cd ~/repo && git pull --rebase
             fi
 
-            # Ensure namespace exists + label (if your NetworkPolicy expects it)
-            kubectl --kubeconfig ~/.kube/sa-deployer.kubeconfig get ns ${NAMESPACE} >/dev/null 2>&1 || \
-              kubectl --kubeconfig ~/.kube/sa-deployer.kubeconfig create namespace ${NAMESPACE}
-            kubectl --kubeconfig ~/.kube/sa-deployer.kubeconfig label ns ${NAMESPACE} name=${NAMESPACE} --overwrite
+            # Ensure namespace exists + label
+            kubectl --kubeconfig ~/.kube/sa-deployer.kubeconfig get ns "${NAMESPACE}" >/dev/null 2>&1 || \
+              kubectl --kubeconfig ~/.kube/sa-deployer.kubeconfig create namespace "${NAMESPACE}"
+            kubectl --kubeconfig ~/.kube/sa-deployer.kubeconfig label ns "${NAMESPACE}" name="${NAMESPACE}" --overwrite
 
-            # Deploy (override image repo/tag with what CI pushed)
-            helm upgrade --install ${RELEASE} \
+            # Deploy using the short SHA tag pushed to Docker Hub
+            helm upgrade --install "${RELEASE}" \
               ~/repo/chart/flask-app \
               --kubeconfig ~/.kube/sa-deployer.kubeconfig \
-              --namespace ${NAMESPACE} \
-              --set image.repository=${IMAGE} \
-              --set image.tag=${TAG} \
+              --namespace "${NAMESPACE}" \
+              --set image.repository="${IMAGE}" \
+              --set image.tag="${SHORT_SHA}" \
               --set image.pullPolicy=IfNotPresent
+
+            # Rollout checks
+            kubectl --kubeconfig ~/.kube/sa-deployer.kubeconfig -n "${NAMESPACE}" rollout status deploy/"${RELEASE}" --timeout=180s
+            kubectl --kubeconfig ~/.kube/sa-deployer.kubeconfig -n "${NAMESPACE}" get pods,svc,hpa
 
             # Rollout checks
             kubectl --kubeconfig ~/.kube/sa-deployer.kubeconfig -n ${NAMESPACE} rollout status deploy/${RELEASE} --timeout=180s
