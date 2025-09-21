@@ -210,12 +210,12 @@ jobs:
      IMAGE: markhor1995/test-app
      DEPLOY_KUBECONFIG_B64: ${{ secrets.DEPLOY_KUBECONFIG_B64 }}
     steps:
-    - name: Checkout (for chart path)
-    - uses: actions/checkout@v3
+     - name: Checkout (for chart path)
+     - uses: actions/checkout@v3
 
-    - name: SSH & deploy with Helm (namespace-only)
-      uses: appleboy/ssh-action@v1.0.3
-      with:
+     - name: SSH & deploy with Helm (namespace-only)
+       uses: appleboy/ssh-action@v1.0.3
+       with:
         host: ${{ secrets.EC2_HOST }}
         username: ${{ secrets.EC2_USER }}
         key: ${{ secrets.EC2_KEY }}
