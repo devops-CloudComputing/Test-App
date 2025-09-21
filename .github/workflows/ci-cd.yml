@@ -265,7 +265,7 @@ jobs:
             fi
             set -e
 
-          docker push markhor1995/test-app:${SHORT_SHA}
-          docker push markhor1995/test-app:latest
+            docker push markhor1995/test-app:${SHORT_SHA}
+            docker push markhor1995/test-app:latest
 
   
