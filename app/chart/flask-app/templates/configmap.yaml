@@ -1,10 +1,16 @@
----
+# app/chart/flask-app/templates/configmap.yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "flask-app.fullname" . }}-config
+  name: {{ include "flask-app.fullname" . }}
   namespace: {{ .Values.namespace | default .Release.Namespace }}
   labels:
     {{- include "flask-app.labels" . | nindent 4 }}
 data:
-  APP_NAME: {{ .Values.config.appName | quote }}
+  {{- if .Values.env }}
+  {{- range $k, $v := .Values.env }}
+  {{ $k }}: {{ $v | quote }}
+  {{- end }}
+  {{- else }}
+  # no non-sensitive env provided
+  {{- end }}
