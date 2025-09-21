@@ -212,23 +212,21 @@ jobs:
       - name: Checkout (for chart path)
         uses: actions/checkout@v3
 
-      - name: SSH & deploy with Helm (debug)
+      - name: SSH & deploy with Helm
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_KEY }}
           script_stop: true
-          envs: RELEASE,NAMESPACE,IMAGE,GITHUB_SHA
+          envs: RELEASE,NAMESPACE,IMAGE,GITHUB_SHA,DEPLOY_KUBECONFIG_B64
           script: |
             set -euo pipefail
-            set -x
-
             SHORT_SHA="${GITHUB_SHA:0:7}"
 
-            # Write kubeconfig from base64 secret
+            # Decode kubeconfig from secret
             mkdir -p ~/.kube
-            printf '%s' "${{ secrets.DEPLOY_KUBECONFIG_B64 }}" | base64 -d > ~/.kube/sa-deployer.kubeconfig
+            echo "${DEPLOY_KUBECONFIG_B64}" | base64 -d > ~/.kube/sa-deployer.kubeconfig
             chmod 600 ~/.kube/sa-deployer.kubeconfig
             export KUBECONFIG=~/.kube/sa-deployer.kubeconfig
 
@@ -266,7 +264,7 @@ jobs:
               --set image.tag="${SHORT_SHA}" \
               --set image.pullPolicy=IfNotPresent
 
-            # Rollout checks (+ diagnostics)
+            # Rollout checks
             set +e
             kubectl -n "${NAMESPACE}" rollout status deploy/"${RELEASE}" --timeout=180s
             R=$?
@@ -277,4 +275,3 @@ jobs:
               exit $R
             fi
             set -e
-
