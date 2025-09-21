@@ -204,65 +204,74 @@ jobs:
     name: Deploy to Kubernetes (Helm on EC2)
     needs: [ push ]
     runs-on: ubuntu-latest
-    env:
-      RELEASE: flask-app
-      NAMESPACE: apps
-      IMAGE: markhor1995/test-app
-      DEPLOY_KUBECONFIG_B64: ${{ secrets.DEPLOY_KUBECONFIG_B64 }}   # 👈 Added here
-    steps:
-      - name: Checkout (for chart path)
-        uses: actions/checkout@v3
+     env:
+     RELEASE: flask-app
+     NAMESPACE: apps
+     IMAGE: markhor1995/test-app
+     DEPLOY_KUBECONFIG_B64: ${{ secrets.DEPLOY_KUBECONFIG_B64 }}
+  steps:
+    - name: Checkout (for chart path)
+    - uses: actions/checkout@v3
 
-      - name: SSH & deploy with Helm (debug)
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_KEY }}
-          script_stop: true
-          envs: RELEASE,NAMESPACE,IMAGE,GITHUB_SHA,DEPLOY_KUBECONFIG_B64
-          script: |
-            set -euo pipefail
-            SHORT_SHA="${GITHUB_SHA:0:7}"
+    - name: SSH & deploy with Helm (namespace-only)
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.EC2_HOST }}
+        username: ${{ secrets.EC2_USER }}
+        key: ${{ secrets.EC2_KEY }}
+        script_stop: true
+        envs: RELEASE,NAMESPACE,IMAGE,GITHUB_SHA,DEPLOY_KUBECONFIG_B64
+        script: |
+          set -euo pipefail
+          set -x  # debug
+          SHORT_SHA="${GITHUB_SHA:0:7}"
 
-            # Decode kubeconfig from GitHub secret
-            mkdir -p ~/.kube
-            echo "${DEPLOY_KUBECONFIG_B64}" | base64 -d > ~/.kube/sa-deployer.kubeconfig
-            chmod 600 ~/.kube/sa-deployer.kubeconfig
-            export KUBECONFIG=~/.kube/sa-deployer.kubeconfig
+          # Write kubeconfig (already base64 in secret)
+          mkdir -p ~/.kube
+          echo "${DEPLOY_KUBECONFIG_B64}" | base64 -d > ~/.kube/sa-deployer.kubeconfig
+          chmod 600 ~/.kube/sa-deployer.kubeconfig
+          export KUBECONFIG=~/.kube/sa-deployer.kubeconfig
 
-            # Quick sanity check
-            kubectl cluster-info
-            kubectl get ns
+          # Ensure kubectl & helm are present
+          if ! command -v kubectl >/dev/null 2>&1; then
+            curl -fsSLo /usr/local/bin/kubectl \
+              "https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl"
+            chmod +x /usr/local/bin/kubectl
+          fi
+          if ! command -v helm >/dev/null 2>&1; then
+            curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          fi
 
-            # Pull chart repo if not already present
-            if [ ! -d ~/repo ]; then
-              sudo apt-get update -y && sudo apt-get install -y git
-              git clone https://github.com/devops-CloudComputing/Test-App ~/repo
-            else
-              cd ~/repo && git pull --rebase
-            fi
+          # Namespace-scoped sanity only (NO cluster-scope calls)
+          kubectl -n "${NAMESPACE}" auth can-i get pods
+          kubectl -n "${NAMESPACE}" auth can-i create deployments
+          kubectl -n "${NAMESPACE}" get deploy || true   # ok if empty
 
-            # Ensure namespace exists + label
-            kubectl get ns "${NAMESPACE}" >/dev/null 2>&1 || kubectl create namespace "${NAMESPACE}"
-            kubectl label ns "${NAMESPACE}" name="${NAMESPACE}" --overwrite
+          # Fetch chart from your repo
+          if [ ! -d ~/repo ]; then
+            sudo apt-get update -y && sudo apt-get install -y git
+            git clone "https://github.com/${GITHUB_REPOSITORY}" ~/repo
+          else
+            cd ~/repo && git pull --rebase
+          fi
 
-            # Deploy with image tag = short SHA
-            helm upgrade --install "${RELEASE}" \
-              ~/repo/chart/flask-app \
-              --namespace "${NAMESPACE}" \
-              --set image.repository="${IMAGE}" \
-              --set image.tag="${SHORT_SHA}" \
-              --set image.pullPolicy=IfNotPresent
+          # Deploy (assumes namespace already exists)
+          helm upgrade --install "${RELEASE}" \
+            ~/repo/chart/flask-app \
+            --namespace "${NAMESPACE}" \
+            --set image.repository="${IMAGE}" \
+            --set image.tag="${SHORT_SHA}" \
+            --set image.pullPolicy=IfNotPresent
 
-            # Rollout check
-            set +e
-            kubectl -n "${NAMESPACE}" rollout status deploy/"${RELEASE}" --timeout=180s
-            R=$?
-            kubectl -n "${NAMESPACE}" get pods,svc,hpa -o wide
-            if [ $R -ne 0 ]; then
-              kubectl -n "${NAMESPACE}" describe deploy "${RELEASE}" || true
-              kubectl -n "${NAMESPACE}" describe pods || true
-              exit $R
-            fi
-            set -e
+          # Rollout checks + diagnostics
+          set +e
+          kubectl -n "${NAMESPACE}" rollout status deploy/"${RELEASE}" --timeout=180s
+          R=$?
+          kubectl -n "${NAMESPACE}" get pods,svc,hpa -o wide
+          if [ $R -ne 0 ]; then
+            kubectl -n "${NAMESPACE}" describe deploy "${RELEASE}" || true
+            kubectl -n "${NAMESPACE}" describe pods || true
+            exit $R
+          fi
+          set -e
+
