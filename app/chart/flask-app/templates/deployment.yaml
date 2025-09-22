@@ -8,11 +8,12 @@ metadata:
 spec:
   replicas: {{ .Values.replicaCount }}
   revisionHistoryLimit: {{ .Values.revisionHistoryLimit | default 3 }}
+  {{- $us := (.Values.updateStrategy | default dict) }}
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxSurge: {{ .Values.updateStrategy.maxSurge | default 1 }}
-      maxUnavailable: {{ .Values.updateStrategy.maxUnavailable | default 0 }}
+      maxSurge: {{ default 1 $us.maxSurge }}
+      maxUnavailable: {{ default 0 $us.maxUnavailable }}
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ include "flask-app.name" . }}
@@ -46,7 +47,7 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ include "flask-app.fullname" . }}-cm
-            {{- if or .Values.existingSecretName (gt (len .Values.secretEnv) 0) }}
+            {{- if or .Values.existingSecretName (gt (len (.Values.secretEnv | default dict)) 0) }}
             - secretRef:
                 name: {{ if .Values.existingSecretName }}{{ .Values.existingSecretName }}{{ else }}{{ include "flask-app.fullname" . }}-secret{{ end }}
             {{- end }}
