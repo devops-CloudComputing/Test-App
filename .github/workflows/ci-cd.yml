@@ -295,13 +295,17 @@ jobs:
               --set image.tag="${SHORT_SHA}" \
               --set image.pullPolicy=IfNotPresent
 
-            # Rollout checks
+            # Rollout checks (discover actual deployment name by label)
             set +e
-            kubectl -n "${NAMESPACE}" rollout status deploy/"${RELEASE}" --timeout=180s
+            DEPLOY_NAME="$(kubectl -n "${NAMESPACE}" get deploy \
+              -l app.kubernetes.io/instance="${RELEASE}" \
+              -o jsonpath='{.items[0].metadata.name}')"
+            echo "Using deployment: ${DEPLOY_NAME:-<none found>}"
+            kubectl -n "${NAMESPACE}" rollout status deploy/"${DEPLOY_NAME}" --timeout=180s
             R=$?
             kubectl -n "${NAMESPACE}" get pods,svc,hpa -o wide
             if [ $R -ne 0 ]; then
-              kubectl -n "${NAMESPACE}" describe deploy "${RELEASE}" || true
+              kubectl -n "${NAMESPACE}" describe deploy "${DEPLOY_NAME}" || true
               kubectl -n "${NAMESPACE}" describe pods || true
               exit $R
             fi
