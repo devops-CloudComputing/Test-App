@@ -70,3 +70,20 @@ networkPolicy:
 
 podAnnotations: {}
 labels: {}
+
+
+# Safe defaults for rolling updates
+updateStrategy:
+  maxSurge: 1
+  maxUnavailable: 0
+
+revisionHistoryLimit: 3
+terminationGracePeriodSeconds: 20
+
+# Optional: better availability during deploys
+replicaCount: 2
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+
